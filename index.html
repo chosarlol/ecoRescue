@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>EcoRescue Cambodia</title>
+
+<!-- Khmer-friendly font: Latin + Khmer in one request. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+Khmer:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ===================================================================
+     TOP BAR - language, sound, about. Always available.
+     =================================================================== -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">&#127795;</span>
+    <span class="brand-text" data-i18n="appTitle">EcoRescue Cambodia</span>
+  </div>
+  <div class="topbar-actions">
+    <button id="btn-about" class="btn btn-ghost btn-sm" data-i18n="aboutData">About the data</button>
+    <button id="btn-mute" class="btn btn-ghost btn-sm" aria-pressed="false" title="Sound">
+      <span id="mute-icon">&#128266;</span>
+    </button>
+    <div class="lang-toggle" role="group" aria-label="Language">
+      <button id="lang-en" class="lang-btn is-active" data-lang="en">EN</button>
+      <button id="lang-km" class="lang-btn" data-lang="km" lang="km">ខ្មែរ</button>
+    </div>
+  </div>
+</header>
+
+<!-- ===================================================================
+     SCREEN 1 - TITLE
+     =================================================================== -->
+<section id="screen-title" class="screen is-active">
+  <div class="card card-wide">
+    <div class="badge-line" data-i18n="themeBadge">OpenData X AI &middot; Environment &amp; Natural Resources</div>
+    <h1 class="title-xl" data-i18n="appTitle">EcoRescue Cambodia</h1>
+    <p class="lede" data-i18n="titleSub">
+      You lead a forest protection team in Kratie. Satellites picked up heat near a
+      village. Walk the forest, read the open data, and decide what to protect first.
+    </p>
+    <div class="facts" id="title-facts"></div>
+    <button id="btn-to-select" class="btn btn-primary btn-lg" data-i18n="start">Start</button>
+    <div class="sources-block" id="title-sources"></div>
+  </div>
+</section>
+
+<!-- ===================================================================
+     SCREEN 2 - CHARACTER SELECT
+     =================================================================== -->
+<section id="screen-select" class="screen">
+  <div class="card card-wide">
+    <h2 class="title-lg" data-i18n="chooseCharacter">Choose your character</h2>
+    <p class="lede sm" data-i18n="chooseSub">
+      Each one changes how you play. You can switch after the mission.
+    </p>
+    <div class="char-grid" id="char-grid"></div>
+    <button id="btn-begin" class="btn btn-primary btn-lg" disabled data-i18n="beginMission">
+      Begin Mission
+    </button>
+  </div>
+</section>
+
+<!-- ===================================================================
+     SCREEN 3 - THE GAME
+     =================================================================== -->
+<section id="screen-game" class="screen screen-game">
+
+  <div class="stage" id="stage">
+    <canvas id="game-canvas"></canvas>
+
+    <!-- ---------- HUD overlay ---------- -->
+    <div class="hud" id="hud">
+
+      <!-- top-left: phase clock + objectives -->
+      <div class="hud-left">
+        <div class="phase-box">
+          <span class="phase-sun" id="phase-sun" aria-hidden="true">&#9728;</span>
+          <div class="phase-text">
+            <span class="phase-label" data-i18n="phase">Phase</span>
+            <span class="phase-value"><b id="phase-num">1</b>/3</span>
+          </div>
+          <div class="phase-bar"><i id="phase-bar-fill"></i></div>
+        </div>
+
+        <ul class="objectives" id="objectives"></ul>
+      </div>
+
+      <!-- top-right: mini-map -->
+      <div class="hud-right">
+        <div class="minimap-wrap">
+          <canvas id="minimap" width="150" height="162"></canvas>
+          <div class="minimap-legend" id="minimap-legend"></div>
+        </div>
+      </div>
+
+      <!-- bottom-centre: contextual prompt + progress -->
+      <div class="hud-bottom">
+        <div class="prompt" id="prompt" hidden>
+          <span class="key" id="prompt-key">E</span>
+          <span id="prompt-text"></span>
+        </div>
+        <div class="doing" id="doing" hidden>
+          <span id="doing-text"></span>
+          <div class="doing-bar"><i id="doing-fill"></i></div>
+        </div>
+        <p class="controls-hint" id="controls-hint" data-i18n="controlsHint">
+          WASD or arrow keys to walk &middot; E to interact
+        </p>
+      </div>
+
+      <!-- on-screen stick, shown on touch devices -->
+      <div class="stick" id="stick" hidden>
+        <div class="stick-base"><div class="stick-knob" id="stick-knob"></div></div>
+      </div>
+
+      <!-- mobile action button -->
+      <button class="touch-action" id="touch-action" hidden data-i18n="interact">Interact</button>
+    </div>
+
+    <!-- ---------- Inspect / info panel ---------- -->
+    <aside class="side-panel" id="info-panel" hidden>
+      <div class="side-panel-head">
+        <h3 id="info-title"></h3>
+        <button class="btn btn-ghost btn-sm" id="info-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="side-panel-body" id="info-body"></div>
+    </aside>
+  </div>
+
+  <p class="disclaimer" id="disclaimer-game"></p>
+</section>
+
+<!-- ===================================================================
+     SCREEN 4 - RESULT
+     =================================================================== -->
+<section id="screen-result" class="screen">
+  <div class="card card-wide">
+    <div id="result-icon" class="result-icon" aria-hidden="true"></div>
+    <h2 id="result-title" class="title-lg"></h2>
+    <p id="result-sub" class="lede sm"></p>
+
+    <div id="result-checklist" class="checklist"></div>
+
+    <div class="why-block">
+      <button id="btn-why" class="btn btn-primary btn-lg" data-i18n="whyButton">
+        Why? Show the risk estimate
+      </button>
+      <div id="why-panel" class="why-panel" hidden></div>
+    </div>
+
+    <div class="row-actions">
+      <button id="btn-replay" class="btn btn-secondary btn-lg" data-i18n="playAgain">Play again</button>
+      <button id="btn-change-char" class="btn btn-secondary btn-lg" data-i18n="changeCharacter">
+        Change character
+      </button>
+      <button id="btn-roadmap" class="btn btn-ghost" data-i18n="roadmap">Roadmap</button>
+    </div>
+  </div>
+  <p class="disclaimer" id="disclaimer-result"></p>
+</section>
+
+<!-- ===================================================================
+     MODAL - About / Roadmap
+     =================================================================== -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <h3 id="modal-title"></h3>
+      <button id="modal-close" class="btn btn-ghost btn-sm" aria-label="Close">&times;</button>
+    </div>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- Loading / error splash, replaced once scenario.json arrives -->
+<div id="boot" class="boot">
+  <div class="boot-inner">
+    <div class="boot-spinner" aria-hidden="true"></div>
+    <p id="boot-text">Loading scenario data&hellip;</p>
+  </div>
+</div>
+
+<!--
+  Load order matters - these are plain scripts, no modules, no build step.
+  risk.js    -> window.EcoRisk
+  sprites.js -> window.Sprites
+  world.js   -> window.World
+  fire.js    -> window.Fire
+  player.js  -> window.PlayerMod
+  ui.js      -> window.UI
+  main.js    -> boots everything
+-->
+<script src="risk.js"></script>
+<script src="sprites.js"></script>
+<script src="world.js"></script>
+<script src="fire.js"></script>
+<script src="player.js"></script>
+<script src="ui.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

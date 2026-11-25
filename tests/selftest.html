@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>EcoRescue self-test</title>
+<style>body{font:13px ui-monospace,monospace;background:#111;color:#ddd;margin:0}
+pre{padding:10px;white-space:pre-wrap}iframe{border:1px solid #333}</style>
+</head><body>
+<pre id="out">running...</pre>
+<iframe id="f" width="1200" height="780"></iframe>
+<script>
+/* =======================================================================
+   Drives the real game in an iframe and prints PASS/FAIL lines, so headless
+   Chrome --dump-dom works as a test runner.
+
+   NOTE ON TIMING: headless Chrome under --virtual-time-budget fast-forwards
+   setTimeout but does NOT drive requestAnimationFrame at the same rate. So
+   anything time-dependent is tested by pumping EcoGame.update(dt) directly,
+   which is deterministic. Only DOM/CSS work uses real waits.
+   ======================================================================= */
+const lines = []; let pass = 0, fail = 0;
+function ok(c, n, d) {
+  if (c) { pass++; lines.push('PASS  ' + n + (d ? '   [' + d + ']' : '')); }
+  else { fail++; lines.push('FAIL  ' + n + (d ? '   [' + d + ']' : '')); }
+  flush();
+}
+function note(s) { lines.push('      ' + s); flush(); }
+function flush() { document.getElementById('out').textContent = lines.join('\n'); }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function waitFor(fn, ms, label) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) { try { if (fn()) return true; } catch (e) {} await sleep(50); }
+  note('timeout waiting for ' + label);
+  return false;
+}
+
+let errors = [];
+function loadFrame() {
+  return new Promise(resolve => {
+    const f = document.getElementById('f');
+    f.onload = () => resolve(f.contentWindow);
+    f.src = '../index.html?cb=' + Math.random();
+  });
+}
+async function boot() {
+  const w = await loadFrame();
+  w.addEventListener('error', e => errors.push(e.message));
+  const okBoot = await waitFor(() => w.EcoGame && w.EcoGame.state.scenario, 15000, 'boot');
+  return { w, okBoot };
+}
+/** Advance the simulation deterministically. */
+function pump(w, seconds, step) {
+  step = step || 1 / 60;
+  for (let t = 0; t < seconds; t += step) w.EcoGame.update(step);
+}
+/** Teleport the player (walking there would take real frames we cannot drive). */
+function placeAt(w, x, y) {
+  w.EcoGame.state.player.x = x;
+  w.EcoGame.state.player.y = y;
+}
+
+async function run() {
+  /* ================= 1. boot and data ================= */
+  let b = await boot();
+  const w = b.w;
+  ok(b.okBoot, 'game boots and loads data/scenario.json');
+  if (!b.okBoot) return finish();
+
+  ['EcoRisk','Sprites','World','Fire','PlayerMod','UI','EcoGame'].forEach(m =>
+    ok(typeof w[m] === 'object', 'module loaded: ' + m));
+
+  const S = w.EcoGame.state, sc = S.scenario, WD = w.World.data;
+  const A = sc.points.filter(p => p.id === 'A')[0];
+  const B = sc.points.filter(p => p.id === 'B')[0];
+
+  ok(B.days_since_detection < A.days_since_detection, 'B is the more recent detection',
+     'A=' + A.days_since_detection + 'd B=' + B.days_since_detection + 'd');
+  ok(B.dist_village_km < A.dist_village_km, 'B is nearer the village',
+     'A=' + A.dist_village_km + 'km B=' + B.dist_village_km + 'km');
+  ok(B.on_forest_edge === true && A.on_forest_edge === false, 'B on forest edge, A is not');
+  ok(B.rain['7'].mm < A.rain['7'].mm, 'B had less recent rain',
+     'A=' + A.rain['7'].mm + 'mm B=' + B.rain['7'].mm + 'mm');
+
+  /* ================= 2. risk estimate ================= */
+  ok(S.risks.B.score > S.risks.A.score, 'B outranks A on risk',
+     'A=' + S.risks.A.score + ' B=' + S.risks.B.score);
+  ok(S.priorityId === 'B', 'priority point is B');
+  ok(S.risks.B.bandKey === 'high' && S.risks.A.bandKey === 'low', 'bands are High / Low');
+  ok(S.risks.B.factors.length === 6, 'six risk factors returned');
+  ok(/not a trained ai model/i.test(S.risks.B.method), 'method disclaims being a trained model');
+  const again = w.EcoRisk.estimateRisk(B, { today: sc.meta.game_today, village: sc.village });
+  ok(again.score === S.risks.B.score, 'estimateRisk is deterministic');
+
+  /* ================= 3. honesty labelling ================= */
+  ok(sc.sources.filter(s => s.id === 'village')[0].sample === true, 'village flagged sample data');
+  ok(sc.sources.filter(s => s.id === 'power')[0].sample === false, 'weather is real NASA POWER');
+  ok(w.document.querySelectorAll('#title-sources .badge-sample').length >= 1,
+     '"Sample data" badge visible on the title screen');
+  ok(/not an official warning system/i.test(w.document.body.textContent),
+     'disclaimer present on screen');
+  ok(!!sc.fire.dryness && sc.fire.dryness.factors.length === 3,
+     'fire dryness derived from 3 real weather factors', 'score=' + sc.fire.dryness.score);
+  ok(/time is compressed/i.test(sc.fire.dryness.note),
+     'dryness note states that time is compressed');
+
+  /* ================= 4. world ================= */
+  ok(WD.snx === sc.grid.nx * 4 && WD.sny === sc.grid.ny * 4, 'sub-grid is 4x the data grid',
+     WD.snx + 'x' + WD.sny);
+  let trees = 0; for (let i = 0; i < WD.trees.length; i++) if (WD.trees[i]) trees++;
+  ok(trees > 1000, 'forest generated', trees + ' trees');
+  ok(WD.houses.length >= 4 && WD.villagers.length >= 4, 'village built',
+     WD.houses.length + ' houses, ' + WD.villagers.length + ' villagers');
+
+  /* ================= 5. characters ================= */
+  ok(w.Sprites.CHARACTERS.length === 3, 'three characters offered');
+  const ranger = w.Sprites.CHARACTERS.filter(c => c.id === 'ranger')[0];
+  const scout = w.Sprites.CHARACTERS.filter(c => c.id === 'scout')[0];
+  const liaison = w.Sprites.CHARACTERS.filter(c => c.id === 'liaison')[0];
+  ok(ranger.perk.speed > 1, 'Ranger perk: faster', 'speed x' + ranger.perk.speed);
+  ok(scout.perk.revealMul > 1 && scout.perk.extraDetail, 'Data Scout perk: sight + detail');
+  ok(liaison.perk.prepareMul < 1, 'Village Liaison perk: faster prepare',
+     'prepare x' + liaison.perk.prepareMul);
+
+  w.document.getElementById('btn-to-select').click();
+  await sleep(200);
+  ok(S.screen === 'select', 'Start opens character select');
+  ok(w.document.getElementById('btn-begin').disabled === true,
+     'Begin is disabled until a character is picked');
+  w.document.querySelectorAll('#char-grid .char-card')[0].click();
+  await sleep(150);
+  ok(w.document.getElementById('btn-begin').disabled === false, 'picking enables Begin');
+
+  /* ================= 6. WINNING PATH ================= */
+  note('--- winning path: inspect B, then prepare the village ---');
+  w.EcoGame.pickCharacter(ranger);
+  w.EcoGame.start();
+  await sleep(250);
+  ok(S.screen === 'game', 'mission screen active');
+  ok(S.phase === 1 && Math.abs(S.timeRemaining - 90) < 0.5, 'starts at phase 1 with 90s',
+     'phase=' + S.phase + ' left=' + S.timeRemaining.toFixed(1));
+
+  const pB = WD.points.filter(p => p.id === 'B')[0];
+  placeAt(w, pB.x, pB.y + 20);
+  pump(w, 0.2);
+  ok(S.nearTarget && S.nearTarget.kind === 'point' && S.nearTarget.ref.id === 'B',
+     'standing next to B registers as a target');
+  ok(w.document.getElementById('prompt').hidden === false, 'E prompt is shown');
+
+  w.EcoGame.input.interactEdge = true;
+  pump(w, 0.2);
+  ok(S.action && S.action.kind === 'inspect', 'pressing E starts an inspect');
+  ok(w.document.getElementById('doing').hidden === false, 'progress bar shown while inspecting');
+  ok(S.player.busy === true, 'player is locked while working');
+
+  pump(w, w.EcoGame.RULES.INSPECT_SECONDS + 0.3);
+  ok(pB.inspected === true, 'inspect completes');
+  ok(S.priorityInspected === true, 'priority objective satisfied');
+  ok(w.document.getElementById('info-panel').hidden === false, 'info panel opened on completion');
+  const panelTxt = w.document.getElementById('info-body').textContent;
+  ok(/3\.04/.test(panelTxt), 'panel shows the real 7-day rainfall');
+  ok(/1\.85/.test(panelTxt), 'panel shows the real distance to village');
+  ok(/VIIRS/.test(panelTxt), 'panel names the sensor');
+  ok(/NASA FIRMS/.test(panelTxt), 'panel names the data source');
+
+  placeAt(w, WD.villageX, WD.villageY + 20);
+  pump(w, 0.2);
+  ok(S.nearTarget && S.nearTarget.kind === 'village', 'village registers as a target');
+  w.EcoGame.input.interactEdge = true;
+  pump(w, 0.2);
+  ok(S.action && S.action.kind === 'prepare', 'pressing E starts preparing');
+  pump(w, w.EcoGame.RULES.PREPARE_SECONDS + 0.3);
+  ok(S.villagePrepared === true, 'village prepared');
+  ok(S.won === true, 'checkWin reports a WIN');
+  ok(S.ended === true, 'mission ended');
+
+  const gotResult = await waitFor(() => S.screen === 'result', 6000, 'result screen');
+  ok(gotResult, 'result screen shown after winning');
+  ok(/Mission Complete/i.test(w.document.getElementById('result-title').textContent),
+     'title says Mission Complete');
+
+  ok(w.document.getElementById('why-panel').hidden === true,
+     'Why? panel hidden until the player asks');
+  w.document.getElementById('btn-why').click();
+  await sleep(250);
+  ok(w.document.getElementById('why-panel').hidden === false, 'Why? panel opens');
+  ok(w.document.querySelectorAll('#why-panel .risk-card').length === 2, 'a risk card per point');
+  ok(w.document.querySelectorAll('#why-panel .factor').length === 12, 'all 12 factor rows');
+  ok(w.document.querySelectorAll('#why-panel svg.spark').length === 1, 'rainfall chart rendered');
+  ok(w.document.querySelectorAll('#why-panel .fire-explain').length === 1,
+     'fire spread explanation rendered');
+  ok(/compressed/i.test(w.document.querySelector('#why-panel .fire-explain').textContent),
+     'fire explanation admits time compression');
+
+  /* ================= 7. LOSING PATH ================= */
+  note('--- losing path: let the fire reach the village ---');
+  b = await boot();
+  const w2 = b.w;
+  ok(b.okBoot, 'game reloads for a second run');
+  const S2 = w2.EcoGame.state, WD2 = w2.World.data;
+  w2.EcoGame.pickCharacter(w2.Sprites.CHARACTERS[0]);
+  w2.EcoGame.start();
+  await sleep(250);
+
+  // Stand well away and do nothing while the fire advances.
+  placeAt(w2, WD2.villageX + 600, WD2.villageY + 600);
+  pump(w2, w2.EcoGame.RULES.FIRE_START_DELAY + 1);
+  ok(w2.Fire.data.started, 'fire ignited at the real hotspot');
+
+  ok(w2.Fire.data.sustainMargin > 1,
+     'fire satisfies the propagation invariant (will not self-extinguish)',
+     'margin=' + w2.Fire.data.sustainMargin.toFixed(2) + ' (needs > 1)');
+
+  const burnStart = w2.Fire.data.burning.length;
+  pump(w2, 20);
+  ok(w2.Fire.data.burning.length > burnStart, 'fire front grows',
+     burnStart + ' -> ' + w2.Fire.data.burning.length + ' cells');
+  ok(w2.Fire.data.cellsBurnt > 0, 'cells burn out behind the front',
+     w2.Fire.data.cellsBurnt + ' burnt');
+
+  const reached = await (async () => {
+    for (let i = 0; i < 200 && !S2.villageLost && !S2.ended; i++) pump(w2, 1);
+    return S2.villageLost;
+  })();
+  ok(reached, 'fire eventually reaches the village');
+  ok(S2.won === false, 'that is a LOSS');
+  ok(S2.priorityInspected === false, 'priority point was never inspected');
+  ok(S2.villagePrepared === false, 'village was never prepared');
+
+  const gotRes2 = await waitFor(() => S2.screen === 'result', 6000, 'result (loss)');
+  ok(gotRes2, 'result screen shown after losing');
+  ok(/incomplete/i.test(w2.document.getElementById('result-title').textContent),
+     'title says incomplete');
+  const checks = w2.document.querySelectorAll('#result-checklist .check');
+  ok(checks.length === 4, 'result lists all four outcomes', checks.length);
+  ok(w2.document.querySelectorAll('#result-checklist .check.is-miss').length >= 2,
+     'missed objectives marked');
+
+  /* ================= 8. timing is winnable but tense ================= */
+  note('--- timing check: how long does the fire take to reach the village? ---');
+  b = await boot();
+  const w3 = b.w;
+  const S3 = w3.EcoGame.state, WD3 = w3.World.data;
+  w3.EcoGame.pickCharacter(w3.Sprites.CHARACTERS[0]);
+  w3.EcoGame.start();
+  await sleep(200);
+  placeAt(w3, WD3.villageX + 900, WD3.villageY + 900);
+  let tt = 0;
+  while (!S3.villageLost && tt < 200) { pump(w3, 0.5); tt += 0.5; }
+  note('fire reached the village at t = ' + tt.toFixed(1) + 's');
+  /* The optimal route (village -> B -> inspect -> village -> prepare) takes
+     roughly 14s, so the fire must arrive well after that for the win to feel
+     earned, but before the 90s clock so the fire - not the timer - is the
+     real pressure. It must also land late enough that phases 2 and 3 actually
+     happen, otherwise the three-phase structure is decorative. */
+  ok(tt > 42 && tt < 75, 'fire arrival is tense but winnable (42-75s)', tt.toFixed(1) + 's');
+  ok(tt > w3.EcoGame.RULES.PHASE_SECONDS, 'fire arrives after phase 2 has begun',
+     tt.toFixed(1) + 's vs phase 2 starting at ' + w3.EcoGame.RULES.PHASE_SECONDS + 's');
+
+  /* ================= 9. replay / change character ================= */
+  b = await boot();
+  const w4 = b.w;
+  const S4 = w4.EcoGame.state;
+  w4.EcoGame.pickCharacter(w4.Sprites.CHARACTERS[2]);
+  w4.EcoGame.start();
+  await sleep(200);
+  pump(w4, 10);
+  w4.EcoGame.start();   // "Play again"
+  await sleep(200);
+  ok(S4.time < 1 && S4.phase === 1, 'replay resets the clock');
+  ok(S4.villagePrepared === false && S4.priorityInspected === false, 'replay resets objectives');
+  ok(w4.Fire.data.started === false && w4.Fire.data.burning.length === 0,
+     'replay resets the fire');
+  ok(S4.player.x === w4.World.data.villageX, 'player returns to the village');
+
+  /* ================= 10. UI / a11y ================= */
+  const modalDisplay = w4.getComputedStyle(w4.document.getElementById('modal')).display;
+  ok(modalDisplay === 'none', 'hidden modal really computes to display:none',
+     'display=' + modalDisplay);
+  w4.document.getElementById('btn-about').click();
+  await sleep(200);
+  const aboutTxt = w4.document.getElementById('modal-body').textContent;
+  ok(/NASA FIRMS/.test(aboutTxt) && /NASA POWER/.test(aboutTxt), 'About names both real sources');
+  ok(/decorative/i.test(aboutTxt), 'About declares the road as decorative, not data');
+  ok(/compressed/i.test(aboutTxt), 'About states that time is compressed');
+  w4.document.getElementById('modal-close').click();
+  await sleep(150);
+  ok(w4.document.getElementById('modal').hidden === true, 'About closes');
+
+  // info panel must be opaque, not relying on an animation finishing
+  const pB4 = w4.World.data.points.filter(p => p.id === 'B')[0];
+  w4.UI.showHeatPointInfo(pB4, S4.scenario, S4.character, S4.player);
+  await sleep(500);
+  const ipStyle = w4.getComputedStyle(w4.document.getElementById('info-panel'));
+  ok(parseFloat(ipStyle.opacity) === 1, 'info panel is fully opaque',
+     'opacity=' + ipStyle.opacity);
+  w4.document.getElementById('info-close').click();
+  await sleep(100);
+  ok(w4.document.getElementById('info-panel').hidden === true, 'info panel closes');
+
+  // Khmer
+  w4.document.getElementById('lang-km').click();
+  await sleep(250);
+  ok(w4.document.documentElement.lang === 'km', 'Khmer toggle sets lang=km');
+  ok(/[ក-៿]/.test(w4.document.querySelector('.objectives').textContent),
+     'objectives render in Khmer script');
+  w4.document.getElementById('lang-en').click();
+  await sleep(200);
+  ok(w4.document.documentElement.lang === 'en', 'English restores');
+
+  // no horizontal overflow at phone width
+  const f = document.getElementById('f');
+  const oldW = f.style.width;
+  f.style.width = '390px';
+  await sleep(600);
+  const de = w4.document.documentElement;
+  ok(de.scrollWidth <= de.clientWidth + 1, 'no horizontal page scroll at 390px',
+     'scrollWidth=' + de.scrollWidth + ' clientWidth=' + de.clientWidth);
+  f.style.width = oldW;
+  await sleep(200);
+
+  ok(errors.length === 0, 'no uncaught runtime errors', errors.join(' | ') || 'none');
+  finish();
+}
+
+function finish() {
+  lines.push('');
+  lines.push('==== ' + pass + ' passed, ' + fail + ' failed ====');
+  lines.push(fail === 0 ? 'RESULT: ALL TESTS PASSED' : 'RESULT: FAILURES PRESENT');
+  flush();
+  document.title = 'done ' + pass + '/' + (pass + fail);
+}
+
+window.addEventListener('error', e => { ok(false, 'harness error', e.message); });
+run().catch(e => {
+  ok(false, 'harness threw', e && e.message);
+  note(String(e && e.stack || '').split('\n').slice(0, 4).join(' | '));
+  finish();
+});
+</script></body></html>
